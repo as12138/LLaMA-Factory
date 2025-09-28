@@ -23,7 +23,11 @@ from typing import TYPE_CHECKING, Any, Optional, Union
 import numpy as np
 import torch
 from transformers import Seq2SeqTrainer
+from transformers.trainer import _is_peft_model
 from typing_extensions import override
+import torch.distributed as dist
+from torch.nn import CrossEntropyLoss
+from torch.utils.data import SequentialSampler
 
 from ...extras import logging
 from ...extras.constants import IGNORE_INDEX
@@ -98,14 +102,50 @@ class CustomSeq2SeqTrainer(Seq2SeqTrainer):
 
     @override
     def _get_train_sampler(self, *args, **kwargs) -> Optional["torch.utils.data.Sampler"]:
-        if self.finetuning_args.disable_shuffling:
+        if self.finetuning_args.disable_shuffling or self.model.sequence_parallel_group is not None:
             return torch.utils.data.SequentialSampler(self.train_dataset)
 
         return super()._get_train_sampler(*args, **kwargs)
 
     @override
-    def compute_loss(self, model, inputs, *args, **kwargs):
-        return super().compute_loss(model, inputs, *args, **kwargs)
+    @override
+    def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
+        r"""
+        Fixes the loss value for transformers 4.46.0.
+        https://github.com/huggingface/transformers/blob/v4.46.0/src/transformers/trainer.py#L3605
+        """
+        if model.sequence_parallel_group is None:  # no sequence parallel, compute as it is
+            loss = super().compute_loss(model, inputs, return_outputs, **kwargs)
+        else:
+            # compute loss without shift labels, as we have already shifted labels in data processing when using sequence parallel
+            _, outputs = super().compute_loss(model, inputs, return_outputs=True, **kwargs)
+            # Flatten the tokens
+            loss_fct = CrossEntropyLoss(reduction="sum")
+            logits, labels = outputs["logits"] if isinstance(outputs, dict) else outputs[1], inputs["labels"]
+            # Get vocab_size
+            unwrapped_model = self.accelerator.unwrap_model(model)
+            if _is_peft_model(unwrapped_model):
+                vocab_size = unwrapped_model.base_model.model.config.vocab_size
+            else:
+                vocab_size = unwrapped_model.config.vocab_size
+            logits = logits.view(-1, vocab_size)
+            labels = labels.view(-1)
+            # Enable model parallelism
+            labels = labels.to(logits.device)
+            loss = loss_fct(logits, labels)
+
+            # weighted reduce within sequence_parallel_group
+            sp_group = model.sequence_parallel_group
+            loss = dist.nn.all_reduce(loss, op=dist.ReduceOp.SUM, group=sp_group)
+            num_items_in_batch = kwargs["num_items_in_batch"]
+            label_num = dist.nn.all_reduce(num_items_in_batch, op=dist.ReduceOp.SUM, group=sp_group)
+
+            loss /= label_num
+
+        # now is single-sequence loss
+        # print('loss', loss.shape, loss)
+
+        return loss
 
     @override
     def prediction_step(
