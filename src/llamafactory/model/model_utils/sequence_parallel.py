@@ -6,7 +6,6 @@ from functools import partial
 import torch.distributed as dist
 import transformers
 import transformers.modeling_flash_attention_utils
-#from ring_flash_attn import zigzag_ring_flash_attn_func
 from .ulysses import UlyssesAttention
 from ...extras.packages import is_transformers_version_greater_than
 
@@ -22,15 +21,11 @@ def new_flash_attn_forward(
     sliding_window=None,
     is_causal=True,
     group=None,
-    mode="zigzag-ring",
+    mode="ulysses",
     attn_fn=None,
     **kwargs,
 ):
-    if mode == "zigzag-ring":
-        attn_output = zigzag_ring_flash_attn_func(
-            query_states, key_states, value_states, dropout, deterministic=deterministic, causal=is_causal, group=group
-        )
-    elif mode == "ulysses":
+    if mode == "ulysses":
         dist_attn = UlyssesAttention(sequence_process_group=group, attn_fn=attn_fn)
         attn_output = dist_attn(query_states, key_states, value_states, attention_mask, query_length=q_len * sequence_parallel_size, deterministic=deterministic, dropout_p=dropout, causal=is_causal) # reset query_length to the real q_len before sp, Special settings for ulysses
     else:
@@ -64,10 +59,7 @@ def apply_sequence_parallel(model_args, full_determinism=False):
 
     try:
         # old_flash_attention_forward = transformers.modeling_flash_attention_utils._flash_attention_forward
-        if model_args.sequence_parallel_mode == "zigzag-ring":
-            new_flash_attention_forward = partial(new_flash_attn_forward, group=group_this, mode=model_args.sequence_parallel_mode, deterministic=full_determinism)
-            # assert check_params(old_flash_attention_forward, new_flash_attention_forward)
-        elif model_args.sequence_parallel_mode == "ulysses":
+        if model_args.sequence_parallel_mode == "ulysses":
             new_flash_attention_forward = partial(new_flash_attn_forward, group=group_this, mode=model_args.sequence_parallel_mode, deterministic=full_determinism, attn_fn=original_attn, sequence_parallel_size=model_args.sequence_parallel_size)
         else:
             raise NotImplementedError("Other sequence parallel modes are to be implemented.")

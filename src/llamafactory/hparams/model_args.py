@@ -117,8 +117,8 @@ class BaseModelArguments:
             "help": "Number of GPUs to process one data sequence. Values greater than 1 means enabling sequence parallelism."
         },
     )
-    sequence_parallel_mode: Literal["zigzag-ring", "llama3", "ulysses"] = field(
-        default="zigzag-ring",
+    sequence_parallel_mode: Literal["ulysses"] = field(
+        default="ulysses",
         metadata={"help": "Specific mode of sequence parallel implementation."},
     )
     moe_aux_loss_coef: Optional[float] = field(

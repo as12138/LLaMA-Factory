@@ -1,4 +1,5 @@
 from ...extras.constants import IGNORE_INDEX
+from ...model import load_config
 from ..data_utils import preprocess_sp_dataset
 
 
@@ -15,7 +16,8 @@ def pad_sequence(examples, data_args, tokenizer):
             pad_token_id = label_pad_token_id
             # shift labels here
             for i in range(len(v)):
-                v[i] = v[i][1:]
+                if not data_args.packing:
+                    v[i] = v[i][1:]
         elif k.endswith("attention_mask"):
             pad_token_id = 0
         elif k.endswith("position_ids"):
@@ -33,17 +35,22 @@ def pad_sequence(examples, data_args, tokenizer):
 
 
 # sp for Sequence Parallel
-def sp_split(examples, model_args):
+def sp_split(examples, model_args, data_args):
+    config = load_config(model_args)
     for k, v in examples.items():
         chunks = list()
         for row in v:
-            if k.endswith("attention_mask"):
+            if k.endswith("attention_mask") or (k == "images" or k == "videos" or k == "audios"): #非文本模态部分直接复制
                 chunks.extend([row] * model_args.sequence_parallel_size)
             elif row is None:
                 chunks.extend([None] * model_args.sequence_parallel_size)
             else:
+                is_multinodal = getattr(config, 'model_type', None) == "qwen2_5_vl"
+                if is_multinodal:
+                    # 文本模态部分在decoder前向时切分
+                    chunks.extend([row] * model_args.seqquence_parallel_size)
                 chunks.extend(
-                    preprocess_sp_dataset(row, model_args.sequence_parallel_size, model_args.sequence_parallel_mode)
+                    preprocess_sp_dataset(row, model_args.sequence_parallel_size, model_args.sequence_parallel_mode, packing=data_args.packing)
                 )
         examples[k] = chunks
     return examples

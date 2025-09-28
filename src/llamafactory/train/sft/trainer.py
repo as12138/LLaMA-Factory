@@ -137,13 +137,14 @@ class CustomSeq2SeqTrainer(Seq2SeqTrainer):
             # weighted reduce within sequence_parallel_group
             sp_group = model.sequence_parallel_group
             loss = dist.nn.all_reduce(loss, op=dist.ReduceOp.SUM, group=sp_group)
-            num_items_in_batch = kwargs["num_items_in_batch"]
-            label_num = dist.nn.all_reduce(num_items_in_batch, op=dist.ReduceOp.SUM, group=sp_group)
+            if self.args.gradient_accumulation_steps > 1:
+                num_items_in_batch = kwargs["num_items_in_batch"]
+                label_num = dist.nn.all_reduce(num_items_in_batch, op=dist.ReduceOp.SUM, group=sp_group)
+            else:
+                label_num = (labels != loss_fct.ignore_index).sum()
+                label_num = dist.nn.all_reduce(label_num, op=dist.ReduceOp.SUM, group=sp_group)
 
             loss /= label_num
-
-        # now is single-sequence loss
-        # print('loss', loss.shape, loss)
 
         return loss
 

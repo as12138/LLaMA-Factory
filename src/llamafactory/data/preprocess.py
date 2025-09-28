@@ -33,7 +33,7 @@ def get_sequence_parallel_preprocess(
     if stage == "pad":
         preprocess_func = partial(pad_sequence, data_args=data_args, tokenizer=tokenizer)
     elif stage == "split":
-        preprocess_func = partial(sp_split, model_args=model_args)
+        preprocess_func = partial(sp_split, model_args=model_args, data_args=data_args)
     else:
         raise NotImplementedError(f"Unexpected stage in sequence_parallel_preprocess: {stage}")
 
